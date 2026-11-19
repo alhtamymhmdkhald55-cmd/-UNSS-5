@@ -1,0 +1,110 @@
+name: Build Anis UNSS APK
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [main, master]
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+
+      - name: Setup Java
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+
+      - name: Locate project
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          PKG=$(find . -type f -name package.json -not -path "*/node_modules/*" -not -path "./android/*" -print -quit)
+
+          if [ -z "$PKG" ]; then
+            echo "ERROR: package.json not found."
+            exit 1
+          fi
+
+          DIR="$(dirname "$PKG")"
+
+          test -f "$DIR/capacitor.config.json"
+          test -f "$DIR/www/index.html"
+          test -f "$DIR/native/android/install-native.sh"
+
+          echo "Project dir: $DIR"
+          echo "PROJECT_DIR=$DIR" >> "$GITHUB_ENV"
+
+      - name: Install dependencies
+        working-directory: ${{ env.PROJECT_DIR }}
+        run: npm install
+
+      - name: Add Android platform
+        working-directory: ${{ env.PROJECT_DIR }}
+        run: npx cap add android
+
+      - name: Install native Adhan components
+        working-directory: ${{ env.PROJECT_DIR }}
+        run: |
+          chmod +x native/android/install-native.sh
+          bash native/android/install-native.sh
+
+      - name: Copy icons and Adhan audio
+        working-directory: ${{ env.PROJECT_DIR }}
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          for d in mdpi hdpi xhdpi xxhdpi xxxhdpi; do
+            mkdir -p "android/app/src/main/res/mipmap-$d"
+            if [ -d "resources/mipmap-$d" ]; then
+              find "resources/mipmap-$d" -maxdepth 1 -type f -name "*.png" -exec cp {} "android/app/src/main/res/mipmap-$d/" \;
+            fi
+          done
+
+          for d in mdpi hdpi xhdpi xxhdpi xxxhdpi nodpi; do
+            mkdir -p "android/app/src/main/res/drawable-$d"
+            if [ -d "resources/drawable-$d" ]; then
+              find "resources/drawable-$d" -maxdepth 1 -type f -name "*.png" -exec cp {} "android/app/src/main/res/drawable-$d/" \;
+            fi
+          done
+
+          mkdir -p android/app/src/main/res/raw
+
+          if [ -f resources/sounds/adhan.mp3 ]; then
+            cp resources/sounds/adhan.mp3 android/app/src/main/res/raw/adhan.mp3
+          else
+            echo "ERROR: adhan.mp3 not found."
+            exit 1
+          fi
+
+          if [ -d resources/sounds ]; then
+            find resources/sounds -maxdepth 1 -type f \( -name "*.wav" -o -name "*.mp3" \) ! -name "adhan.mp3" -exec cp {} android/app/src/main/res/raw/ \;
+          fi
+
+      - name: Sync Android
+        working-directory: ${{ env.PROJECT_DIR }}
+        run: npx cap sync android
+
+      - name: Build APK
+        working-directory: ${{ env.PROJECT_DIR }}/android
+        run: |
+          chmod +x gradlew
+          ./gradlew assembleDebug --no-daemon
+
+      - name: Upload APK
+        uses: actions/upload-artifact@v4
+        with:
+          name: Anis-UNSS-Adhan-Fixed-APK
+          path: ${{ env.PROJECT_DIR }}/android/app/build/outputs/apk/debug/app-debug.apk
+          if-no-files-found: error
